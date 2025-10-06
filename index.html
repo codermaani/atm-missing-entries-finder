@@ -2,17 +2,21 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>ATM Discrepancy Finder (Online)</title>
+    <title>ATM Discrepancy Finder</title>
     <style>
         table { border-collapse: collapse; width: 100%; }
         th, td { border: 1px solid black; padding: 8px; text-align: left; }
         pre { white-space: pre-wrap; border: 1px solid #ccc; padding: 10px; max-height: 400px; overflow: auto; }
-        h3 { color: red; } /* For debug visibility */
+        h3 { color: red; }
+        label { margin-right: 10px; }
     </style>
 </head>
 <body>
-    <h1>ATM Discrepancy Finder (Online)</h1>
-    <p>Upload DD45 files (multiple allowed) and EJ.txt files (multiple allowed), then click Analyze to find transactions of 2500 PKR.</p>
+    <h1>ATM Discrepancy Finder</h1>
+    <p>Upload DD45 files (multiple allowed) and EJ.txt files (multiple allowed), enter the discrepancy amount, then click Analyze.</p>
+    
+    <label for="discrepancyAmount">Discrepancy Amount (e.g., 2500):</label>
+    <input type="number" id="discrepancyAmount" value="2500"><br><br>
     
     <label for="dd45files">DD45 Files:</label>
     <input type="file" id="dd45files" multiple accept=".html,.txt"><br><br>
@@ -25,16 +29,25 @@
     <div id="result"></div>
     
     <script>
-        // Function to strip HTML tags and get plain text
+        // Enhanced function to strip HTML tags and clean text
         function stripHtml(html) {
+            // Remove script/style tags and their content
+            html = html.replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '');
+            html = html.replace(/<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>/gi, '');
+            // Create a temporary div to extract text
             const div = document.createElement('div');
             div.innerHTML = html;
-            return div.textContent || div.innerText || '';
+            let text = div.textContent || div.innerText || '';
+            // Decode HTML entities (e.g., &nbsp;, &amp;)
+            text = text.replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>');
+            // Remove extra whitespace
+            return text.replace(/\s+/g, ' ').trim();
         }
         
         function analyze() {
             const dd45Inputs = document.getElementById('dd45files').files;
             const ejInputs = document.getElementById('ejfiles').files;
+            const discrepancyAmount = parseFloat(document.getElementById('discrepancyAmount').value) || 2500;
             if (dd45Inputs.length === 0) {
                 alert('Please upload at least one DD45 file.');
                 return;
@@ -48,7 +61,7 @@
                 promises.push(new Promise((resolve) => {
                     let reader = new FileReader();
                     reader.onload = (e) => {
-                        dd45Text += stripHtml(e.target.result) + '\n\n'; // Add extra newline for separation
+                        dd45Text += stripHtml(e.target.result) + '\n\n';
                         resolve();
                     };
                     reader.readAsText(file);
@@ -68,49 +81,70 @@
             }
             
             Promise.all(promises).then(() => {
-                // Split into lines
                 const lines = dd45Text.split(/\r?\n/);
                 const transactions = [];
-                const discrepancyAmount = 2500; // Edit this if the difference amount changes
                 
                 // Debug: Total lines and first 10 raw lines
                 let html = '<h3>Debug: Total Lines Read: ' + lines.length + '</h3>';
                 html += '<h3>Debug: First 10 Raw Lines from DD45 Files</h3><pre>';
                 for (let i = 0; i < Math.min(10, lines.length); i++) {
-                    html += lines[i].substring(0, 200) + (lines[i].length > 200 ? '...' : '') + '\n'; // Truncate long lines
+                    html += lines[i].substring(0, 200) + (lines[i].length > 200 ? '...' : '') + '\n';
                 }
                 html += '</pre>';
                 
+                // Track skip reasons
+                let skipReasons = { empty: 0, pattern: 0, noDB: 0, insufficientFields: 0, invalidAmount: 0 };
+                
                 for (let line of lines) {
-                    // Aggressive normalization: strip extra spaces, tabs, non-breaking spaces
+                    // Normalize whitespace
                     line = line.replace(/[\t\u00A0]+/g, ' ').replace(/\s+/g, ' ').trim();
-                    if (!line || line.match(/^(P|TOTAL|\*|<|<\/)/i)) continue;
+                    if (!line) {
+                        skipReasons.empty++;
+                        continue;
+                    }
+                    if (line.match(/^(P|TOTAL|\*|<|<\/)/i)) {
+                        skipReasons.pattern++;
+                        continue;
+                    }
                     
                     // Split by spaces
                     const fields = line.split(' ').filter(f => f.length > 0);
-                    // Look for 'DB' in position 2 or nearby, relaxed count >=6
                     let dbIndex = -1;
-                    for (let i = 0; i < Math.min(5, fields.length); i++) {
+                    for (let i = 0; i < fields.length; i++) {
                         if (fields[i] === 'DB') {
                             dbIndex = i;
                             break;
                         }
                     }
-                    if (dbIndex === -1 || fields.length < dbIndex + 4) continue;
+                    if (dbIndex === -1) {
+                        skipReasons.noDB++;
+                        continue;
+                    }
+                    if (fields.length < dbIndex + 4) {
+                        skipReasons.insufficientFields++;
+                        continue;
+                    }
                     
-                    const account = fields[0];
-                    const particulars = fields[1];
+                    const account = fields[0] || '';
+                    const particulars = fields[1] || '';
                     const amountStr = fields[dbIndex + 1].replace(/,/g, '');
                     const amount = parseFloat(amountStr);
-                    if (isNaN(amount)) continue;
+                    if (isNaN(amount)) {
+                        skipReasons.invalidAmount++;
+                        continue;
+                    }
                     
-                    const card = fields[dbIndex + 2];
-                    const imd = fields[dbIndex + 3];
-                    const id = fields[dbIndex + 4];
+                    const card = fields[dbIndex + 2] || '';
+                    const imd = fields[dbIndex + 3] || '';
+                    const id = fields[dbIndex + 4] || '';
                     const stan = fields[dbIndex + 5] || '';
                     const datetimeParts = [];
                     for (let j = dbIndex + 6; j < fields.length && j < dbIndex + 8; j++) {
-                        if (fields[j].match(/\d{2}-\w{3}-\d{4}/)) datetimeParts.push(fields[j]);
+                        if (fields[j] && fields[j].match(/\d{2}-\w{3}-\d{4}/)) {
+                            datetimeParts.push(fields[j]);
+                            if (j + 1 < fields.length) datetimeParts.push(fields[j + 1]);
+                            break;
+                        }
                     }
                     const datetime = datetimeParts.join(' ') || '';
                     
@@ -127,14 +161,14 @@
                     });
                 }
                 
-                // Filter for discrepancy amount (exact or close match for floats)
+                // Filter for discrepancy amount
                 const candidates = transactions.filter(t => Math.abs(t.amount - discrepancyAmount) < 0.01);
                 
                 // Build output
-                html += '<h2>Potential Missing Entries (Amount: 2500 PKR)</h2>';
+                html += `<h2>Potential Missing Entries (Amount: ${discrepancyAmount} PKR)</h2>`;
                 html += '<p>Total transactions parsed: ' + transactions.length + '</p>';
                 if (candidates.length === 0) {
-                    html += '<p>No transactions found for 2500 PKR. Check debug above.</p>';
+                    html += `<p>No transactions found for ${discrepancyAmount} PKR. Check debug sections.</p>`;
                 } else {
                     html += '<table><tr><th>Account</th><th>Amount</th><th>Date/Time</th><th>STAN</th><th>Card</th></tr>';
                     for (let t of candidates) {
@@ -143,7 +177,15 @@
                     html += '</table>';
                 }
                 
-                // Additional debug if zero transactions
+                // Debug: Skip reasons and sample processed lines
+                html += '<h3>Debug: Skip Reasons</h3><pre>';
+                html += `Empty lines: ${skipReasons.empty}\n`;
+                html += `Lines matching P/TOTAL/*/<: ${skipReasons.pattern}\n`;
+                html += `Lines without DB: ${skipReasons.noDB}\n`;
+                html += `Lines with insufficient fields: ${skipReasons.insufficientFields}\n`;
+                html += `Lines with invalid amount: ${skipReasons.invalidAmount}\n`;
+                html += '</pre>';
+                
                 if (transactions.length === 0) {
                     html += '<h3>Debug: Sample Processed Lines (First 5 Non-Empty)</h3><pre>';
                     let count = 0;
@@ -159,7 +201,7 @@
                     html += '</pre>';
                 }
                 
-                html += '<h2>EJ Log (for Manual Cross-Check)</h2><pre>' + (ejText.substring(0, 5000) || 'No EJ files uploaded. (Showing first 5000 chars)') + '</pre>';
+                html += '<h2>EJ Log (for Manual Cross-Check)</h2><pre>' + (ejText.substring(0, 5000) || 'No EJ files uploaded.') + '</pre>';
                 
                 document.getElementById('result').innerHTML = html;
             });
