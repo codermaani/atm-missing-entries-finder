@@ -84,4 +84,138 @@
                 html += '<h3>Debug: Total Lines Read: ' + lines.length + '</h3>';
                 html += '<h3>Debug: First 10 Raw Lines from DD45 Files (Post-Strip)</h3><pre>';
                 for (let i = 0; i < Math.min(10, lines.length); i++) {
-                    html += lines[i].substring(0, 200) + (lines[i
+                    html += lines[i].substring(0, 200) + (lines[i].length > 200 ? '...' : '') + '\n';
+                }
+                html += '</pre>';
+                
+                // Flexible regex for transaction lines
+                const regex = /^(\S+)\s+(.+?)\s+DB\s+([\d,.]+(?:\.\d{1,2})?)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\d{2}-\w{3}-\d{4}\s+\S+)?/;
+                const largeLineRegex = /(\S+\s+.+?\s+DB\s+[\d,.]+(?:\.\d{1,2})?\s+\S+\s+\S+\s+\S+\s+\S+\s+\d{2}-\w{3}-\d{4}\s+\S+)/g;
+                
+                for (let line of lines) {
+                    line = line.replace(/[\t\u00A0]+/g, ' ').replace(/\s+/g, ' ').trim();
+                    if (!line) {
+                        skipReasons.empty++;
+                        continue;
+                    }
+                    if (line.match(/^(P|TOTAL|\*|<|<\/|DD45|ACCOUNT)/i)) {
+                        skipReasons.pattern++;
+                        continue;
+                    }
+                    
+                    const match = line.match(regex);
+                    if (match) {
+                        const [, account, particulars, amountStr, card, imd, id, stan, datetime] = match;
+                        const amount = parseFloat(amountStr.replace(/,/g, ''));
+                        regexMatches.push({ line, account, amountStr, amount: isNaN(amount) ? 'Invalid' : amount, datetime, stan, card });
+                        if (!isNaN(amount)) {
+                            transactions.push({
+                                account,
+                                particulars,
+                                amount,
+                                amountStr,
+                                card,
+                                imd,
+                                id,
+                                stan,
+                                datetime: datetime || ''
+                            });
+                        } else {
+                            skipReasons.invalidAmount++;
+                        }
+                        continue;
+                    }
+                    
+                    skipReasons.regexFail++;
+                    
+                    // Check for transactions in large lines
+                    const matches = line.match(largeLineRegex);
+                    if (matches) {
+                        for (let match of matches) {
+                            const subMatch = match.match(regex);
+                            if (subMatch) {
+                                const [, account, particulars, amountStr, card, imd, id, stan, datetime] = subMatch;
+                                const amount = parseFloat(amountStr.replace(/,/g, ''));
+                                if (!isNaN(amount) && !transactions.some(t => t.stan === stan && t.datetime === datetime)) {
+                                    regexMatches.push({ line: match, account, amountStr, amount, datetime, stan, card });
+                                    transactions.push({
+                                        account,
+                                        particulars,
+                                        amount,
+                                        amountStr,
+                                        card,
+                                        imd,
+                                        id,
+                                        stan,
+                                        datetime: datetime || ''
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+                
+                const candidates = transactions.filter(t => Math.abs(t.amount - discrepancyAmount) <= 10);
+                
+                html += `<h2>Potential Missing Entries (Amount: ${discrepancyAmount} PKR)</h2>`;
+                html += '<p>Total transactions parsed: ' + transactions.length + '</p>';
+                if (candidates.length === 0) {
+                    html += `<p>No transactions found for ${discrepancyAmount} PKR. Check debug sections.</p>`;
+                } else {
+                    html += '<table><tr><th>Account</th><th>Amount</th><th>Date/Time</th><th>STAN</th><th>Card</th></tr>';
+                    for (let t of candidates) {
+                        html += `<tr><td>${t.account}</td><td>${t.amountStr} (${t.amount})</td><td>${t.datetime}</td><td>${t.stan}</td><td>${t.card}</td></tr>`;
+                    }
+                    html += '</table>';
+                }
+                
+                html += '<h3>Debug: All Parsed Transactions</h3>';
+                if (transactions.length > 0) {
+                    html += '<table><tr><th>Account</th><th>Amount</th><th>Date/Time</th><th>STAN</th><th>Card</th></tr>';
+                    for (let t of transactions) {
+                        html += `<tr><td>${t.account}</td><td>${t.amountStr} (${t.amount})</td><td>${t.datetime}</td><td>${t.stan}</td><td>${t.card}</td></tr>`;
+                    }
+                    html += '</table>';
+                } else {
+                    html += '<p>No transactions parsed.</p>';
+                }
+                
+                html += '<h3>Debug: All Regex Matches (Including Failures)</h3>';
+                if (regexMatches.length > 0) {
+                    html += '<table><tr><th>Line</th><th>Account</th><th>Amount</th><th>Date/Time</th><th>STAN</th><th>Card</th></tr>';
+                    for (let m of regexMatches) {
+                        html += `<tr><td>${m.line.substring(0, 100)}${m.line.length > 100 ? '...' : ''}</td><td>${m.account}</td><td>${m.amountStr} (${m.amount})</td><td>${m.datetime || ''}</td><td>${m.stan}</td><td>${m.card}</td></tr>`;
+                    }
+                    html += '</table>';
+                } else {
+                    html += '<p>No regex matches found.</p>';
+                }
+                
+                html += '<h3>Debug: Skip Reasons</h3><pre>';
+                html += `Empty lines: ${skipReasons.empty}\n`;
+                html += `Lines matching P/TOTAL/*/</DD45/ACCOUNT: ${skipReasons.pattern}\n`;
+                html += `Lines with invalid amount: ${skipReasons.invalidAmount}\n`;
+                html += `Lines failing regex: ${skipReasons.regexFail}\n`;
+                html += '</pre>';
+                
+                html += '<h3>Debug: All Lines (Skipped or Not)</h3><pre>';
+                lines.forEach((line, index) => {
+                    line = line.replace(/[\t\u00A0]+/g, ' ').replace(/\s+/g, ' ').trim();
+                    const fields = line.split(' ').filter(f => f.length > 0);
+                    const match = line.match(regex);
+                    const reason = !line ? 'Empty' :
+                        line.match(/^(P|TOTAL|\*|<|<\/|DD45|ACCOUNT)/i) ? 'Matches P/TOTAL/*/</DD45/ACCOUNT pattern' :
+                        !match ? 'Failed regex match' :
+                        isNaN(parseFloat(match[3]?.replace(/,/g, ''))) ? 'Invalid amount' : 'Parsed';
+                    html += `Line ${index + 1}: ${line.substring(0, 150)}${line.length > 150 ? '...' : ''}\nReason: ${reason}\nFields (${fields.length}): ${fields.slice(0, 10).join(', ')}\n\n`;
+                });
+                html += '</pre>';
+                
+                html += '<h2>EJ Log (for Manual Cross-Check)</h2><pre>' + (ejText.substring(0, 5000) || 'No EJ files uploaded.') + '</pre>';
+                
+                document.getElementById('result').innerHTML = html;
+            });
+        }
+    </script>
+</body>
+</html>
