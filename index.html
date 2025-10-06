@@ -49,12 +49,14 @@
             }
             let dd45Text = '';
             let ejText = '';
+            let rawDd45Text = '';
             let promises = [];
             
             for (let file of dd45Inputs) {
                 promises.push(new Promise((resolve) => {
                     let reader = new FileReader();
                     reader.onload = (e) => {
+                        rawDd45Text += e.target.result.substring(0, 1000) + '\n\n'; // Limit raw for debug
                         dd45Text += stripHtml(e.target.result) + '\n\n';
                         resolve();
                     };
@@ -78,8 +80,9 @@
                 const transactions = [];
                 let skipReasons = { empty: 0, pattern: 0, noDB: 0, insufficientFields: 0, invalidAmount: 0 };
                 
-                let html = '<h3>Debug: Total Lines Read: ' + lines.length + '</h3>';
-                html += '<h3>Debug: First 10 Raw Lines from DD45 Files</h3><pre>';
+                let html = '<h3>Debug: Raw File Content (First 1000 chars)</h3><pre>' + rawDd45Text.substring(0, 2000) + '</pre>';
+                html += '<h3>Debug: Total Lines Read: ' + lines.length + '</h3>';
+                html += '<h3>Debug: First 10 Raw Lines from DD45 Files (Post-Strip)</h3><pre>';
                 for (let i = 0; i < Math.min(10, lines.length); i++) {
                     html += lines[i].substring(0, 200) + (lines[i].length > 200 ? '...' : '') + '\n';
                 }
@@ -96,7 +99,7 @@
                         continue;
                     }
                     
-                    // Try regex fallback for transaction lines
+                    // Regex for transaction lines like: G10000350 72-ATMW... DB 2,500.00 ...
                     const regex = /^(\S+)\s+(.+?)\s+DB\s+([\d,.]+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\d{2}-\w{3}-\d{4})\s+(\S+)/;
                     const match = line.match(regex);
                     if (match) {
@@ -118,7 +121,7 @@
                         }
                     }
                     
-                    // Fallback to field splitting
+                    // Fallback field splitting
                     const fields = line.split(' ').filter(f => f.length > 0);
                     let dbIndex = -1;
                     for (let i = 0; i < fields.length; i++) {
@@ -205,22 +208,17 @@
                 html += `Lines with invalid amount: ${skipReasons.invalidAmount}\n`;
                 html += '</pre>';
                 
-                html += '<h3>Debug: All Non-Skipped Lines</h3><pre>';
-                let nonSkipped = [];
-                for (let line of lines) {
+                html += '<h3>Debug: All Lines (Skipped or Not)</h3><pre>';
+                lines.forEach((line, index) => {
                     line = line.replace(/[\t\u00A0]+/g, ' ').replace(/\s+/g, ' ').trim();
-                    if (line && !line.match(/^(P|TOTAL|\*|<|<\/)/i)) {
-                        const fields = line.split(' ').filter(f => f.length > 0);
-                        nonSkipped.push({ line: line.substring(0, 150), fields: fields.slice(0, 10) });
-                    }
-                }
-                if (nonSkipped.length === 0) {
-                    html += 'No non-skipped lines found—files may be empty or fully HTML-wrapped.';
-                } else {
-                    nonSkipped.forEach((item, index) => {
-                        html += `Line ${index + 1}: ${item.line}\nFields (${item.fields.length}): ${item.fields.join(', ')}\n\n`;
-                    });
-                }
+                    const fields = line.split(' ').filter(f => f.length > 0);
+                    const reason = !line ? 'Empty' :
+                        line.match(/^(P|TOTAL|\*|<|<\/)/i) ? 'Matches P/TOTAL/*/< pattern' :
+                        fields.indexOf('DB') === -1 ? 'No DB found' :
+                        fields.length < fields.indexOf('DB') + 4 ? 'Insufficient fields' :
+                        isNaN(parseFloat(fields[fields.indexOf('DB') + 1]?.replace(/,/g, ''))) ? 'Invalid amount' : 'Parsed';
+                    html += `Line ${index + 1}: ${line.substring(0, 150)}${line.length > 150 ? '...' : ''}\nReason: ${reason}\nFields (${fields.length}): ${fields.slice(0, 10).join(', ')}\n\n`;
+                });
                 html += '</pre>';
                 
                 html += '<h2>EJ Log (for Manual Cross-Check)</h2><pre>' + (ejText.substring(0, 5000) || 'No EJ files uploaded.') + '</pre>';
