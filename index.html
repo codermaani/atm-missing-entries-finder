@@ -13,7 +13,7 @@
 </head>
 <body>
     <h1>ATM Discrepancy Finder</h1>
-    <p>Upload DD45 files (multiple allowed) and EJ.txt files (multiple allowed), enter the discrepancy amount, then click Analyze.</p>
+    <p>Upload DD45 files (multiple allowed, .txt preferred) and EJ.txt files, enter the discrepancy amount, then click Analyze.</p>
     
     <label for="discrepancyAmount">Discrepancy Amount (e.g., 2500):</label>
     <input type="number" id="discrepancyAmount" value="2500"><br><br>
@@ -96,6 +96,29 @@
                         continue;
                     }
                     
+                    // Try regex fallback for transaction lines
+                    const regex = /^(\S+)\s+(.+?)\s+DB\s+([\d,.]+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\d{2}-\w{3}-\d{4})\s+(\S+)/;
+                    const match = line.match(regex);
+                    if (match) {
+                        const [, account, particulars, amountStr, card, imd, id, stan, date, time] = match;
+                        const amount = parseFloat(amountStr.replace(/,/g, ''));
+                        if (!isNaN(amount)) {
+                            transactions.push({
+                                account,
+                                particulars,
+                                amount,
+                                amountStr,
+                                card,
+                                imd,
+                                id,
+                                stan,
+                                datetime: `${date} ${time}`
+                            });
+                            continue;
+                        }
+                    }
+                    
+                    // Fallback to field splitting
                     const fields = line.split(' ').filter(f => f.length > 0);
                     let dbIndex = -1;
                     for (let i = 0; i < fields.length; i++) {
@@ -163,7 +186,6 @@
                     html += '</table>';
                 }
                 
-                // Debug: Show all parsed transactions
                 html += '<h3>Debug: All Parsed Transactions</h3>';
                 if (transactions.length > 0) {
                     html += '<table><tr><th>Account</th><th>Amount</th><th>Date/Time</th><th>STAN</th><th>Card</th></tr>';
@@ -183,20 +205,23 @@
                 html += `Lines with invalid amount: ${skipReasons.invalidAmount}\n`;
                 html += '</pre>';
                 
-                if (transactions.length === 0) {
-                    html += '<h3>Debug: Sample Processed Lines (First 5 Non-Empty)</h3><pre>';
-                    let count = 0;
-                    for (let line of lines) {
-                        line = line.replace(/[\t\u00A0]+/g, ' ').replace(/\s+/g, ' ').trim();
-                        if (line && !line.match(/^(P|TOTAL|\*|<|<\/)/i) && count < 5) {
-                            const fields = line.split(' ').filter(f => f.length > 0);
-                            html += 'Line: ' + line.substring(0, 150) + '\nFields (' + fields.length + '): ' + fields.slice(0, 10).join(', ') + '\n\n';
-                            count++;
-                        }
+                html += '<h3>Debug: All Non-Skipped Lines</h3><pre>';
+                let nonSkipped = [];
+                for (let line of lines) {
+                    line = line.replace(/[\t\u00A0]+/g, ' ').replace(/\s+/g, ' ').trim();
+                    if (line && !line.match(/^(P|TOTAL|\*|<|<\/)/i)) {
+                        const fields = line.split(' ').filter(f => f.length > 0);
+                        nonSkipped.push({ line: line.substring(0, 150), fields: fields.slice(0, 10) });
                     }
-                    if (count === 0) html += 'No non-skipped lines found—files may be empty or fully HTML-wrapped.';
-                    html += '</pre>';
                 }
+                if (nonSkipped.length === 0) {
+                    html += 'No non-skipped lines found—files may be empty or fully HTML-wrapped.';
+                } else {
+                    nonSkipped.forEach((item, index) => {
+                        html += `Line ${index + 1}: ${item.line}\nFields (${item.fields.length}): ${item.fields.join(', ')}\n\n`;
+                    });
+                }
+                html += '</pre>';
                 
                 html += '<h2>EJ Log (for Manual Cross-Check)</h2><pre>' + (ejText.substring(0, 5000) || 'No EJ files uploaded.') + '</pre>';
                 
