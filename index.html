@@ -29,18 +29,13 @@
     <div id="result"></div>
     
     <script>
-        // Enhanced function to strip HTML tags and clean text
         function stripHtml(html) {
-            // Remove script/style tags and their content
             html = html.replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '');
             html = html.replace(/<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>/gi, '');
-            // Create a temporary div to extract text
             const div = document.createElement('div');
             div.innerHTML = html;
             let text = div.textContent || div.innerText || '';
-            // Decode HTML entities (e.g., &nbsp;, &amp;)
             text = text.replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>');
-            // Remove extra whitespace
             return text.replace(/\s+/g, ' ').trim();
         }
         
@@ -56,7 +51,6 @@
             let ejText = '';
             let promises = [];
             
-            // Read all DD45 files
             for (let file of dd45Inputs) {
                 promises.push(new Promise((resolve) => {
                     let reader = new FileReader();
@@ -68,7 +62,6 @@
                 }));
             }
             
-            // Read all EJ files
             for (let file of ejInputs) {
                 promises.push(new Promise((resolve) => {
                     let reader = new FileReader();
@@ -83,8 +76,8 @@
             Promise.all(promises).then(() => {
                 const lines = dd45Text.split(/\r?\n/);
                 const transactions = [];
+                let skipReasons = { empty: 0, pattern: 0, noDB: 0, insufficientFields: 0, invalidAmount: 0 };
                 
-                // Debug: Total lines and first 10 raw lines
                 let html = '<h3>Debug: Total Lines Read: ' + lines.length + '</h3>';
                 html += '<h3>Debug: First 10 Raw Lines from DD45 Files</h3><pre>';
                 for (let i = 0; i < Math.min(10, lines.length); i++) {
@@ -92,11 +85,7 @@
                 }
                 html += '</pre>';
                 
-                // Track skip reasons
-                let skipReasons = { empty: 0, pattern: 0, noDB: 0, insufficientFields: 0, invalidAmount: 0 };
-                
                 for (let line of lines) {
-                    // Normalize whitespace
                     line = line.replace(/[\t\u00A0]+/g, ' ').replace(/\s+/g, ' ').trim();
                     if (!line) {
                         skipReasons.empty++;
@@ -107,7 +96,6 @@
                         continue;
                     }
                     
-                    // Split by spaces
                     const fields = line.split(' ').filter(f => f.length > 0);
                     let dbIndex = -1;
                     for (let i = 0; i < fields.length; i++) {
@@ -127,7 +115,7 @@
                     
                     const account = fields[0] || '';
                     const particulars = fields[1] || '';
-                    const amountStr = fields[dbIndex + 1].replace(/,/g, '');
+                    const amountStr = fields[dbIndex + 1].replace(/,/g, '').replace(/[^0-9.]/g, '');
                     const amount = parseFloat(amountStr);
                     if (isNaN(amount)) {
                         skipReasons.invalidAmount++;
@@ -161,10 +149,8 @@
                     });
                 }
                 
-                // Filter for discrepancy amount
-                const candidates = transactions.filter(t => Math.abs(t.amount - discrepancyAmount) < 0.01);
+                const candidates = transactions.filter(t => Math.abs(t.amount - discrepancyAmount) <= 1);
                 
-                // Build output
                 html += `<h2>Potential Missing Entries (Amount: ${discrepancyAmount} PKR)</h2>`;
                 html += '<p>Total transactions parsed: ' + transactions.length + '</p>';
                 if (candidates.length === 0) {
@@ -177,7 +163,18 @@
                     html += '</table>';
                 }
                 
-                // Debug: Skip reasons and sample processed lines
+                // Debug: Show all parsed transactions
+                html += '<h3>Debug: All Parsed Transactions</h3>';
+                if (transactions.length > 0) {
+                    html += '<table><tr><th>Account</th><th>Amount</th><th>Date/Time</th><th>STAN</th><th>Card</th></tr>';
+                    for (let t of transactions) {
+                        html += `<tr><td>${t.account}</td><td>${t.amountStr} (${t.amount})</td><td>${t.datetime}</td><td>${t.stan}</td><td>${t.card}</td></tr>`;
+                    }
+                    html += '</table>';
+                } else {
+                    html += '<p>No transactions parsed.</p>';
+                }
+                
                 html += '<h3>Debug: Skip Reasons</h3><pre>';
                 html += `Empty lines: ${skipReasons.empty}\n`;
                 html += `Lines matching P/TOTAL/*/<: ${skipReasons.pattern}\n`;
