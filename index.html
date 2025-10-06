@@ -77,7 +77,7 @@
             Promise.all(promises).then(() => {
                 const lines = dd45Text.split(/\n/);
                 const transactions = [];
-                let skipReasons = { empty: 0, pattern: 0, noDB: 0, insufficientFields: 0, invalidAmount: 0, regexFail: 0 };
+                let skipReasons = { empty: 0, pattern: 0, invalidAmount: 0, regexFail: 0 };
                 let regexMatches = [];
                 
                 let html = '<h3>Debug: Raw File Content (First 4000 chars)</h3><pre>' + rawDd45Text.substring(0, 8000) + '</pre>';
@@ -88,9 +88,9 @@
                 }
                 html += '</pre>';
                 
-                // Flexible regex for transaction lines
-                const regex = /^(\S+)\s+(.+?)\s+DB\s+([\d,.]+(?:\.\d{1,2})?)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\d{2}-\w{3}-\d{4}\s+\S+)?/;
-                const largeLineRegex = /(\S+\s+.+?\s+DB\s+[\d,.]+(?:\.\d{1,2})?\s+\S+\s+\S+\s+\S+\s+\S+\s+\d{2}-\w{3}-\d{4}\s+\S+)/g;
+                // Flexible regex
+                const regex = /^(\S+)\s+(.+?)\s+DB\s+([\d,.]+(?:\.\d{0,2})?)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)(?:\s+(\d{2}-\w{3}-\d{4}\s+\S+))?(?:\s+\S+)?/;
+                const largeLineRegex = /(\S+\s+.+?\s+DB\s+[\d,.]+(?:\.\d{0,2})?\s+\S+\s+\S+\s+\S+\s+\S+(?:\s+\d{2}-\w{3}-\d{4}\s+\S+)?(?:\s+\S+)?)/g;
                 
                 for (let line of lines) {
                     line = line.replace(/[\t\u00A0]+/g, ' ').replace(/\s+/g, ' ').trim();
@@ -107,7 +107,7 @@
                     if (match) {
                         const [, account, particulars, amountStr, card, imd, id, stan, datetime] = match;
                         const amount = parseFloat(amountStr.replace(/,/g, ''));
-                        regexMatches.push({ line, account, amountStr, amount: isNaN(amount) ? 'Invalid' : amount, datetime, stan, card });
+                        regexMatches.push({ line, account, amountStr, amount: isNaN(amount) ? 'Invalid' : amount, datetime: datetime || '', stan, card });
                         if (!isNaN(amount)) {
                             transactions.push({
                                 account,
@@ -128,7 +128,7 @@
                     
                     skipReasons.regexFail++;
                     
-                    // Check for transactions in large lines
+                    // Check large lines
                     const matches = line.match(largeLineRegex);
                     if (matches) {
                         for (let match of matches) {
@@ -137,7 +137,7 @@
                                 const [, account, particulars, amountStr, card, imd, id, stan, datetime] = subMatch;
                                 const amount = parseFloat(amountStr.replace(/,/g, ''));
                                 if (!isNaN(amount) && !transactions.some(t => t.stan === stan && t.datetime === datetime)) {
-                                    regexMatches.push({ line: match, account, amountStr, amount, datetime, stan, card });
+                                    regexMatches.push({ line: match, account, amountStr, amount, datetime: datetime || '', stan, card });
                                     transactions.push({
                                         account,
                                         particulars,
@@ -164,15 +164,16 @@
                 } else {
                     html += '<table><tr><th>Account</th><th>Amount</th><th>Date/Time</th><th>STAN</th><th>Card</th></tr>';
                     for (let t of candidates) {
-                        html += `<tr><td>${t.account}</td><td>${t.amountStr} (${t.amount})</td><td>${t.datetime}</td><td>${t.stan}</td><td>${t.card}</td></tr>`;
+                        html += `<tr><td>${t.account}</td><td>${t.amountStr} (${t.amount})</td><td>${t.datetime}</td><td>${t.stan}</td><td>${t.card}</td></tr>';
                     }
                     html += '</table>';
                 }
                 
-                html += '<h3>Debug: All Parsed Transactions</h3>';
+                html += '<h3>Debug: All Parsed Transactions (First 1000)</h3>';
                 if (transactions.length > 0) {
                     html += '<table><tr><th>Account</th><th>Amount</th><th>Date/Time</th><th>STAN</th><th>Card</th></tr>';
-                    for (let t of transactions) {
+                    for (let i = 0; i < Math.min(1000, transactions.length); i++) {
+                        const t = transactions[i];
                         html += `<tr><td>${t.account}</td><td>${t.amountStr} (${t.amount})</td><td>${t.datetime}</td><td>${t.stan}</td><td>${t.card}</td></tr>`;
                     }
                     html += '</table>';
@@ -190,6 +191,17 @@
                 } else {
                     html += '<p>No regex matches found.</p>';
                 }
+                
+                html += '<h3>Debug: Lines Containing 2,500</h3><pre>';
+                const matchingLines = lines.filter(line => line.includes('2,500'));
+                if (matchingLines.length > 0) {
+                    matchingLines.forEach((line, index) => {
+                        html += `Line ${index + 1}: ${line.substring(0, 150)}${line.length > 150 ? '...' : ''}\n`;
+                    });
+                } else {
+                    html += 'No lines contain "2,500".\n';
+                }
+                html += '</pre>';
                 
                 html += '<h3>Debug: Skip Reasons</h3><pre>';
                 html += `Empty lines: ${skipReasons.empty}\n`;
@@ -211,7 +223,7 @@
                 });
                 html += '</pre>';
                 
-                html += '<h2>EJ Log (for Manual Cross-Check)</h2><pre>' + (ejText.substring(0, 5000) || 'No EJ files uploaded.') + '</pre>';
+                html += '<h3>EJ Log (for Manual Cross-Check)</h3><pre>' + (ejText.substring(0, 5000) || 'No EJ files uploaded.') + '</pre>';
                 
                 document.getElementById('result').innerHTML = html;
             });
