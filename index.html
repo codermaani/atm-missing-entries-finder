@@ -30,13 +30,17 @@
     
     <script>
         function stripHtml(html) {
+            // Remove script/style tags
             html = html.replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '');
             html = html.replace(/<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>/gi, '');
-            const div = document.createElement('div');
-            div.innerHTML = html;
-            let text = div.textContent || div.innerText || '';
-            text = text.replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>');
-            return text.replace(/\s+/g, ' ').trim();
+            // Replace table row and break tags with newlines
+            html = html.replace(/<\/?(tr|br|p|div)\b[^>]*>/gi, '\n');
+            // Remove all other HTML tags
+            html = html.replace(/<[^>]+>/g, '');
+            // Decode HTML entities
+            html = html.replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>');
+            // Normalize whitespace but preserve newlines
+            return html.replace(/[ \t]+/g, ' ').replace(/\n\s*\n/g, '\n').trim();
         }
         
         function analyze() {
@@ -56,7 +60,7 @@
                 promises.push(new Promise((resolve) => {
                     let reader = new FileReader();
                     reader.onload = (e) => {
-                        rawDd45Text += e.target.result.substring(0, 1000) + '\n\n'; // Limit raw for debug
+                        rawDd45Text += e.target.result.substring(0, 2000) + '\n\n';
                         dd45Text += stripHtml(e.target.result) + '\n\n';
                         resolve();
                     };
@@ -76,11 +80,11 @@
             }
             
             Promise.all(promises).then(() => {
-                const lines = dd45Text.split(/\r?\n/);
+                const lines = dd45Text.split(/\n/);
                 const transactions = [];
-                let skipReasons = { empty: 0, pattern: 0, noDB: 0, insufficientFields: 0, invalidAmount: 0 };
+                let skipReasons = { empty: 0, pattern: 0, noDB: 0, insufficientFields: 0, invalidAmount: 0, regexFail: 0 };
                 
-                let html = '<h3>Debug: Raw File Content (First 1000 chars)</h3><pre>' + rawDd45Text.substring(0, 2000) + '</pre>';
+                let html = '<h3>Debug: Raw File Content (First 2000 chars)</h3><pre>' + rawDd45Text.substring(0, 4000) + '</pre>';
                 html += '<h3>Debug: Total Lines Read: ' + lines.length + '</h3>';
                 html += '<h3>Debug: First 10 Raw Lines from DD45 Files (Post-Strip)</h3><pre>';
                 for (let i = 0; i < Math.min(10, lines.length); i++) {
@@ -88,24 +92,28 @@
                 }
                 html += '</pre>';
                 
+                // Regex to match transaction lines
+                const regex = /^(\S+)\s+(.+?)\s+DB\s+([\d,.]+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\d{2}-\w{3}-\d{4})\s+(\S+)/;
+                const allMatches = [];
+                
+                // Process lines with regex
                 for (let line of lines) {
                     line = line.replace(/[\t\u00A0]+/g, ' ').replace(/\s+/g, ' ').trim();
                     if (!line) {
                         skipReasons.empty++;
                         continue;
                     }
-                    if (line.match(/^(P|TOTAL|\*|<|<\/)/i)) {
+                    if (line.match(/^(P|TOTAL|\*|<|<\/|DD45|ACCOUNT)/i)) {
                         skipReasons.pattern++;
                         continue;
                     }
                     
-                    // Regex for transaction lines like: G10000350 72-ATMW... DB 2,500.00 ...
-                    const regex = /^(\S+)\s+(.+?)\s+DB\s+([\d,.]+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\d{2}-\w{3}-\d{4})\s+(\S+)/;
                     const match = line.match(regex);
                     if (match) {
                         const [, account, particulars, amountStr, card, imd, id, stan, date, time] = match;
                         const amount = parseFloat(amountStr.replace(/,/g, ''));
                         if (!isNaN(amount)) {
+                            allMatches.push({ line, account, amount, amountStr, datetime: `${date} ${time}`, stan, card });
                             transactions.push({
                                 account,
                                 particulars,
@@ -118,61 +126,41 @@
                                 datetime: `${date} ${time}`
                             });
                             continue;
+                        } else {
+                            skipReasons.invalidAmount++;
+                        }
+                    } else {
+                        skipReasons.regexFail++;
+                    }
+                }
+                
+                // Fallback: Split large lines into potential transactions
+                const largeLineRegex = /(\S+\s+.+?\s+DB\s+[\d,.]+\s+\S+\s+\S+\s+\S+\s+\S+\s+\d{2}-\w{3}-\d{4}\s+\S+)/g;
+                for (let line of lines) {
+                    const matches = line.match(largeLineRegex);
+                    if (matches) {
+                        for (let match of matches) {
+                            const subMatch = match.match(regex);
+                            if (subMatch) {
+                                const [, account, particulars, amountStr, card, imd, id, stan, date, time] = subMatch;
+                                const amount = parseFloat(amountStr.replace(/,/g, ''));
+                                if (!isNaN(amount) && !transactions.some(t => t.stan === stan && t.datetime === `${date} ${time}`)) {
+                                    allMatches.push({ line: match, account, amount, amountStr, datetime: `${date} ${time}`, stan, card });
+                                    transactions.push({
+                                        account,
+                                        particulars,
+                                        amount,
+                                        amountStr,
+                                        card,
+                                        imd,
+                                        id,
+                                        stan,
+                                        datetime: `${date} ${time}`
+                                    });
+                                }
+                            }
                         }
                     }
-                    
-                    // Fallback field splitting
-                    const fields = line.split(' ').filter(f => f.length > 0);
-                    let dbIndex = -1;
-                    for (let i = 0; i < fields.length; i++) {
-                        if (fields[i] === 'DB') {
-                            dbIndex = i;
-                            break;
-                        }
-                    }
-                    if (dbIndex === -1) {
-                        skipReasons.noDB++;
-                        continue;
-                    }
-                    if (fields.length < dbIndex + 4) {
-                        skipReasons.insufficientFields++;
-                        continue;
-                    }
-                    
-                    const account = fields[0] || '';
-                    const particulars = fields[1] || '';
-                    const amountStr = fields[dbIndex + 1].replace(/,/g, '').replace(/[^0-9.]/g, '');
-                    const amount = parseFloat(amountStr);
-                    if (isNaN(amount)) {
-                        skipReasons.invalidAmount++;
-                        continue;
-                    }
-                    
-                    const card = fields[dbIndex + 2] || '';
-                    const imd = fields[dbIndex + 3] || '';
-                    const id = fields[dbIndex + 4] || '';
-                    const stan = fields[dbIndex + 5] || '';
-                    const datetimeParts = [];
-                    for (let j = dbIndex + 6; j < fields.length && j < dbIndex + 8; j++) {
-                        if (fields[j] && fields[j].match(/\d{2}-\w{3}-\d{4}/)) {
-                            datetimeParts.push(fields[j]);
-                            if (j + 1 < fields.length) datetimeParts.push(fields[j + 1]);
-                            break;
-                        }
-                    }
-                    const datetime = datetimeParts.join(' ') || '';
-                    
-                    transactions.push({ 
-                        account, 
-                        particulars, 
-                        amount, 
-                        amountStr, 
-                        card, 
-                        imd, 
-                        id, 
-                        stan, 
-                        datetime 
-                    });
                 }
                 
                 const candidates = transactions.filter(t => Math.abs(t.amount - discrepancyAmount) <= 1);
@@ -200,12 +188,24 @@
                     html += '<p>No transactions parsed.</p>';
                 }
                 
+                html += '<h3>Debug: All Potential Transaction Matches</h3>';
+                if (allMatches.length > 0) {
+                    html += '<table><tr><th>Line</th><th>Account</th><th>Amount</th><th>Date/Time</th><th>STAN</th><th>Card</th></tr>';
+                    for (let m of allMatches) {
+                        html += `<tr><td>${m.line.substring(0, 100)}${m.line.length > 100 ? '...' : ''}</td><td>${m.account}</td><td>${m.amountStr} (${m.amount})</td><td>${m.datetime}</td><td>${m.stan}</td><td>${m.card}</td></tr>`;
+                    }
+                    html += '</table>';
+                } else {
+                    html += '<p>No potential transaction matches found.</p>';
+                }
+                
                 html += '<h3>Debug: Skip Reasons</h3><pre>';
                 html += `Empty lines: ${skipReasons.empty}\n`;
-                html += `Lines matching P/TOTAL/*/<: ${skipReasons.pattern}\n`;
+                html += `Lines matching P/TOTAL/*/</DD45/ACCOUNT: ${skipReasons.pattern}\n`;
                 html += `Lines without DB: ${skipReasons.noDB}\n`;
                 html += `Lines with insufficient fields: ${skipReasons.insufficientFields}\n`;
                 html += `Lines with invalid amount: ${skipReasons.invalidAmount}\n`;
+                html += `Lines failing regex: ${skipReasons.regexFail}\n`;
                 html += '</pre>';
                 
                 html += '<h3>Debug: All Lines (Skipped or Not)</h3><pre>';
@@ -213,9 +213,8 @@
                     line = line.replace(/[\t\u00A0]+/g, ' ').replace(/\s+/g, ' ').trim();
                     const fields = line.split(' ').filter(f => f.length > 0);
                     const reason = !line ? 'Empty' :
-                        line.match(/^(P|TOTAL|\*|<|<\/)/i) ? 'Matches P/TOTAL/*/< pattern' :
-                        fields.indexOf('DB') === -1 ? 'No DB found' :
-                        fields.length < fields.indexOf('DB') + 4 ? 'Insufficient fields' :
+                        line.match(/^(P|TOTAL|\*|<|<\/|DD45|ACCOUNT)/i) ? 'Matches P/TOTAL/*/</DD45/ACCOUNT pattern' :
+                        !line.match(regex) ? 'Failed regex match' :
                         isNaN(parseFloat(fields[fields.indexOf('DB') + 1]?.replace(/,/g, ''))) ? 'Invalid amount' : 'Parsed';
                     html += `Line ${index + 1}: ${line.substring(0, 150)}${line.length > 150 ? '...' : ''}\nReason: ${reason}\nFields (${fields.length}): ${fields.slice(0, 10).join(', ')}\n\n`;
                 });
